@@ -1039,6 +1039,7 @@ upng_error upng_decode(upng_t* upng)
 
 	/* allocate enough space for the (compressed and filtered) image data */
 	compressed = (unsigned char*)malloc(compressed_size);
+    printf("compressed_size = %d\n", compressed_size);
 	if (compressed == NULL) {
 		SET_ERROR(upng, UPNG_ENOMEM);
 		return upng->error;
@@ -1068,6 +1069,7 @@ upng_error upng_decode(upng_t* upng)
 	/* allocate space to store inflated (but still filtered) data */
 	inflated_size = ((upng->width * (upng->height * upng_get_bpp(upng) + 7)) / 8) + upng->height;
 	inflated = (unsigned char*)malloc(inflated_size);
+    printf("inflated_size = %d\n", inflated_size);
 	if (inflated == NULL) {
 		free(compressed);
 		SET_ERROR(upng, UPNG_ENOMEM);
@@ -1088,6 +1090,7 @@ upng_error upng_decode(upng_t* upng)
 	/* allocate final image buffer */
 	upng->size = (upng->height * upng->width * upng_get_bpp(upng) + 7) / 8;
 	upng->buffer = (unsigned char*)malloc(upng->size);
+    printf("upng->size = %d\n", upng->size);
 	if (upng->buffer == NULL) {
 		free(inflated);
 		upng->size = 0;
@@ -1112,6 +1115,179 @@ upng_error upng_decode(upng_t* upng)
 
 	return upng->error;
 }
+
+/*
+ * cyang add 
+ * deocde into a preallocted buffer
+ */
+/*read a PNG, the result will be in the same color type as the PNG (hence "generic")*/
+upng_error upng_decode_to_buffer(upng_t* upng, unsigned char* buffer, unsigned long buffer_size)
+{
+	const unsigned char *chunk;
+	unsigned char* compressed;
+	unsigned char* inflated;
+	unsigned long compressed_size = 0, compressed_index = 0;
+	unsigned long inflated_size;
+	upng_error error;
+
+    unsigned long buffer_use = 0;
+
+	/* if we have an error state, bail now */
+	if (upng->error != UPNG_EOK) {
+		return upng->error;
+	}
+
+	/* parse the main header, if necessary */
+	upng_header(upng);
+	if (upng->error != UPNG_EOK) {
+		return upng->error;
+	}
+
+	/* if the state is not HEADER (meaning we are ready to decode the image), stop now */
+	if (upng->state != UPNG_HEADER) {
+		return upng->error;
+	}
+
+	/* release old result, if any */
+	if (upng->buffer != 0) {
+		free(upng->buffer);
+		upng->buffer = 0;
+		upng->size = 0;
+	}
+
+	/* first byte of the first chunk after the header */
+	chunk = upng->source.buffer + 33;
+
+	/* scan through the chunks, finding the size of all IDAT chunks, and also
+	 * verify general well-formed-ness */
+	while (chunk < upng->source.buffer + upng->source.size) {
+		unsigned long length;
+		const unsigned char *data;	/*the data in the chunk */
+
+		/* make sure chunk header is not larger than the total compressed */
+		if ((unsigned long)(chunk - upng->source.buffer + 12) > upng->source.size) {
+			SET_ERROR(upng, UPNG_EMALFORMED);
+			return upng->error;
+		}
+
+		/* get length; sanity check it */
+		length = upng_chunk_length(chunk);
+		if (length > INT_MAX) {
+			SET_ERROR(upng, UPNG_EMALFORMED);
+			return upng->error;
+		}
+
+		/* make sure chunk header+paylaod is not larger than the total compressed */
+		if ((unsigned long)(chunk - upng->source.buffer + length + 12) > upng->source.size) {
+			SET_ERROR(upng, UPNG_EMALFORMED);
+			return upng->error;
+		}
+
+		/* get pointer to payload */
+		data = chunk + 8;
+
+		/* parse chunks */
+		if (upng_chunk_type(chunk) == CHUNK_IDAT) {
+			compressed_size += length;
+		} else if (upng_chunk_type(chunk) == CHUNK_IEND) {
+			break;
+		} else if (upng_chunk_critical(chunk)) {
+			SET_ERROR(upng, UPNG_EUNSUPPORTED);
+			return upng->error;
+		}
+
+		chunk += upng_chunk_length(chunk) + 12;
+	}
+
+	/* allocate enough space for the (compressed and filtered) image data */
+//	compressed = (unsigned char*)malloc(compressed_size);
+    compressed = &buffer[buffer_use];
+    buffer_use += compressed_size;
+    printf("compressed_size = %d\n", compressed_size);
+	if (buffer_use > buffer_size) {
+        printf("compressed buffer_use = %d\n", buffer_use);
+		SET_ERROR(upng, UPNG_ENOMEM);
+		return upng->error;
+	}
+
+	/* scan through the chunks again, this time copying the values into
+	 * our compressed buffer.  there's no reason to validate anything a second time. */
+	chunk = upng->source.buffer + 33;
+	while (chunk < upng->source.buffer + upng->source.size) {
+		unsigned long length;
+		const unsigned char *data;	/*the data in the chunk */
+
+		length = upng_chunk_length(chunk);
+		data = chunk + 8;
+
+		/* parse chunks */
+		if (upng_chunk_type(chunk) == CHUNK_IDAT) {
+			memcpy(compressed + compressed_index, data, length);
+			compressed_index += length;
+		} else if (upng_chunk_type(chunk) == CHUNK_IEND) {
+			break;
+		}
+
+		chunk += upng_chunk_length(chunk) + 12;
+	}
+
+	/* allocate space to store inflated (but still filtered) data */
+	inflated_size = ((upng->width * (upng->height * upng_get_bpp(upng) + 7)) / 8) + upng->height;
+//	inflated = (unsigned char*)malloc(inflated_size);
+    printf("inflated_size = %d\n", inflated_size);
+    inflated = &buffer[buffer_use];
+    buffer_use += inflated_size;
+	if (buffer_use > buffer_size) {
+//		free(compressed);
+        printf("inflated buffer_use = %d\n", buffer_use);
+		SET_ERROR(upng, UPNG_ENOMEM);
+		return upng->error;
+	}
+
+	/* decompress image data */
+	error = uz_inflate(upng, inflated, inflated_size, compressed, compressed_size);
+	if (error != UPNG_EOK) {
+//		free(compressed);
+//		free(inflated);
+		return upng->error;
+	}
+
+	/* free the compressed compressed data */
+//	free(compressed);
+
+	/* allocate final image buffer */
+	upng->size = (upng->height * upng->width * upng_get_bpp(upng) + 7) / 8;
+//	upng->buffer = (unsigned char*)malloc(upng->size);
+    upng->buffer = &buffer[buffer_use];
+    buffer_use += upng->size;
+    printf("upng->size = %d\n", upng->size);
+	if (buffer_use > buffer_size) {
+//		free(inflated);
+        printf("upng->size buffer_use = %d\n", buffer_use);
+		upng->size = 0;
+		SET_ERROR(upng, UPNG_ENOMEM);
+		return upng->error;
+	}
+
+	/* unfilter scanlines */
+	post_process_scanlines(upng, upng->buffer, inflated, upng);
+//	free(inflated);
+
+	if (upng->error != UPNG_EOK) {
+//		free(upng->buffer);
+		upng->buffer = NULL;
+		upng->size = 0;
+	} else {
+		upng->state = UPNG_DECODED;
+	}
+
+	/* we are done with our input buffer; free it if we own it */
+	upng_free_source(upng);
+
+    printf("buffer_use = %d\n", buffer_use);
+	return upng->error;
+}
+
 
 static upng_t* upng_new(void)
 {
