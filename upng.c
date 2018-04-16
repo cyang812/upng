@@ -98,6 +98,8 @@ struct upng_t {
 
 	upng_state		state;
 	upng_source		source;
+
+	char 			output_owning; //cyang add. Is output to a preallocated buffer
 };
 
 typedef struct huffman_tree {
@@ -1090,10 +1092,12 @@ upng_error upng_decode(upng_t* upng)
 	/* allocate final image buffer */
 	upng->size = (upng->height * upng->width * upng_get_bpp(upng) + 7) / 8;
 	upng->buffer = (unsigned char*)malloc(upng->size);
+	upng->output_owning = 1;
     printf("upng->size = %d\n", upng->size);
 	if (upng->buffer == NULL) {
 		free(inflated);
 		upng->size = 0;
+		upng->output_owning = 0;
 		SET_ERROR(upng, UPNG_ENOMEM);
 		return upng->error;
 	}
@@ -1259,6 +1263,7 @@ upng_error upng_decode_to_buffer(upng_t* upng, unsigned char* buffer, unsigned l
 	upng->size = (upng->height * upng->width * upng_get_bpp(upng) + 7) / 8;
 //	upng->buffer = (unsigned char*)malloc(upng->size);
     upng->buffer = &buffer[buffer_use];
+    upng->output_owning = 0;
     buffer_use += upng->size;
     printf("upng->size = %d\n", upng->size);
 	if (buffer_use > buffer_size) {
@@ -1315,6 +1320,8 @@ static upng_t* upng_new(void)
 	upng->source.buffer = NULL;
 	upng->source.size = 0;
 	upng->source.owning = 0;
+
+	upng->output_owning = 0;
 
 	return upng;
 }
@@ -1377,8 +1384,10 @@ upng_t* upng_new_from_file(const char *filename)
 void upng_free(upng_t* upng)
 {
 	/* deallocate image buffer */
-	if (upng->buffer != NULL) {
-		free(upng->buffer);
+	if (upng->output_owning){
+		if (upng->buffer != NULL) {
+			free(upng->buffer);
+		}
 	}
 
 	/* deallocate source buffer, if necessary */
