@@ -10,4 +10,4 @@ This project is fork by [there]()
 
 - If you need to deocde a png image and store the raw data into a preallocated buffer, you need use `upng_decode_to_buffer()` fun. Like that `upng_decode_to_buffer(upng, (unsigned char *)decoder_buffer, sizeof(decoder_buffer));`.
 
-- The size of preallocated buffer is must have a minimum size of that png file size plus width*height*2. 
+- The size of preallocated buffer is must have a minimum size of that png file size plus width\*height\*2. 
